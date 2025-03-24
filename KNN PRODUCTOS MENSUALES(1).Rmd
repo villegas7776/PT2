@@ -1,0 +1,169 @@
+---
+title: "KNN PRODUCTOS MENSUALES"
+author: "Miguel Angel Villegas"
+date: "2025-03-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libreria}
+library(readxl)
+library(forecast)
+library(TSstudio)
+library(tsfknn)
+```
+
+# Introducción
+Se descargan los valores de los productos ,luego se crea la serie temporal con una frecuencia mensual. Puesto que es un método no-parámetrico no existe información de AIC y de los residuales del modelo resultante. Por lo que el críterio a considerar para evaluar el modelo seran las metricas de exactitud, además el mejor modelo se determina en base al número de "k" vecinos en un vector de valores, que dependiendo el número de retrasos se puede maximixar pues el modelo tolera un número máximo de ambos combinados, en caso de sobre pasar el numero máximo de retrasos o vecinos próximos se despliega una advertencia la cual indica la imposibilidad de realizar el cálculo.
+
+Se obtienen los datos
+ 
+```{r ruta}
+ruta_prod <- "/cloud/project/df_dif.xlsx"
+excel_sheets(ruta_prod)
+```
+
+
+```{r Datos}
+df_dif <- as.data.frame(read_xlsx(path = ruta_prod, col_names = T, 
+                                  sheet = "Sheet 1"))
+head(df_dif)
+```
+
+Serie de tiempo
+
+```{r serie}
+serie_KNN_PROD_mes <- ts(data = df_dif$dif, 
+                        start = c(2019,07,03), end = c(2024,08,05),
+                        frequency = 12)
+```
+
+
+Gráficas de serie de tiempo
+
+```{r plot series, echo=FALSE}
+plot(serie_KNN_PROD_mes,type = "l", col = "blue", 
+     main = "Serie mensual de productos", ylab = "Valores")
+```
+
+
+Serie de entrenamiento y prueba
+
+```{r division}
+dividida_knn_PROD_mes <- ts_split(serie_KNN_PROD_mes,
+                                 sample.out = round(length(serie_KNN_PROD_mes)*0.2))
+
+train_knn_PROD_mes <- dividida_knn_PROD_mes$train
+
+test_knn_PROD_mes <- dividida_knn_PROD_mes$test
+```
+
+## Modelo KNN con la estrategia de nultiples entradas y multiples salidas
+
+```{r modelo}
+pronosticos_knn_PROD_mes <- knn_forecasting(train_knn_PROD_mes, 
+                                           h = length(test_knn_PROD_mes), 
+                                           lags = c(1:12), 
+                                           k = c(2:12), msas = "MIMO")
+```
+
+Gráfica pronóstico
+
+```{r autoplot,echo=FALSE }
+autoplot(pronosticos_knn_PROD_mes)
+```
+
+Intervalo de confianza
+
+```{r IC}
+erro_PROD_knn_mes <- ( test_knn_PROD_mes - pronosticos_knn_PROD_mes$prediction)
+sd_errores_PROD_knn_mes <- sd(erro_PROD_knn_mes, na.rm = T)
+margen_error_PROD_knn_mes <- sd_errores_PROD_knn_mes * 1.96 # qnorm(0.975)
+# Limites
+pronosticos_knn_PROD_mes$inferior <- pronosticos_knn_PROD_mes$prediction - margen_error_PROD_knn_mes
+pronosticos_knn_PROD_mes$superior <- pronosticos_knn_PROD_mes$prediction + margen_error_PROD_knn_mes
+```
+
+Gráfica con los valores de prueba y pronóstico.
+
+```{r graficas pronos, echo=FALSE}
+plot(test_knn_PROD_mes[1:6], type = "l", col = "blue",
+     main = "Serie de pronósticos mensuales de productos", ylab = "Valores", 
+     lwd = 2,ylim = c(-5,5), xlab = "Meses")
+lines(pronosticos_knn_PROD_mes$prediction[1:6],type = "l", col = "red",lty = 2, 
+      lwd = 2)
+lines(pronosticos_knn_PROD_mes$inferior[1:6], col = "steelblue", lty = 2)
+lines(pronosticos_knn_PROD_mes$superior[1:6], col = "steelblue", lty = 2)
+legend("bottomleft",legend = c("Actual","Prediccion", "IC"), 
+       col = c("blue", "red", "steelblue"), lty = c(1,2, 2), cex = 0.4)
+```
+
+Medidas de exactitud
+
+```{r metricas1}
+accuracy(pronosticos_knn_PROD_mes$prediction,x = test_knn_PROD_mes)
+#                ME     RMSE      MAE      MPE     MAPE       ACF1 Theil's U
+# Test set 0.1654994 1.787765 1.597842 237.3555 237.3555 -0.2981265 0.8896603
+```
+
+
+```{r metricas2}
+accuracy(pronosticos_knn_PROD_mes$prediction[1:6],x = test_knn_PROD_mes[1:6])
+#                ME     RMSE      MAE      MPE     MAPE
+# Test set 0.7376441 1.574764 1.415285 330.2587 330.2587
+```
+
+
+Se realiza el método rolling del paquete "tsfknn" que evalua la presicion de origen rotativo de la predicción de un modelo
+
+```{r rolling}
+prono_knn_PROD_roll_mes <- knn_forecasting(serie_KNN_PROD_mes, 
+                                          h = length(test_knn_PROD_mes), 
+                                          lags = c(1:12), 
+                                          k = c(2:12), msas = "MIMO")
+roll_PROD_mes <- rolling_origin(knnf = prono_knn_PROD_roll_mes,
+                               h = length(test_knn_PROD_mes), rolling = T)
+```
+
+Evitando el cero absoluto
+
+```{r ceros}
+prueba_numeric_mes <-  as.numeric(test_knn_PROD_mes)
+prueba_numeric_mes[prueba_numeric_mes == 0] <- 1e-6
+```
+
+
+```{r exactitud}
+accuracy(prono_knn_PROD_roll_mes$prediction,x = prueba_numeric_mes)
+#                  ME     RMSE      MAE       MPE     MAPE
+#  Test set -0.1697463 1.931223 1.689193 -191.7965 379.705
+```
+
+Metricas con una previsión de 6 meses
+
+```{r metricas}
+accuracy(prono_knn_PROD_roll_mes$prediction[1:6],x = prueba_numeric_mes[1:6])
+#                  ME     RMSE      MAE       MPE     MAPE
+#  Test set 0.4364375 1.682402  1.46633  82.00908 82.00908
+```
+
+
+```{r graficas pron rolling, echo=FALSE}
+plot(prono_knn_PROD_roll_mes$prediction[1:6], col = "red", ylab = "Valores",
+     main = "Serie de pronósticos mensuales de productos", type = "l", ylim = c(-3,3))
+lines(prueba_numeric_mes[1:6],type = "l", col = "blue")
+legend("bottomleft", legend = c("pronostico", "actuales"),
+       fill = c("red", "blue"), cex = 0.6, 
+       lty = c(1,1))
+```
+
+
+## Conclusiones
+El modelo resultante por el método sin rolling ofrece un mejor resultado.
+
+

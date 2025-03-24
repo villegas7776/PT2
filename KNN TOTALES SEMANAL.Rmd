@@ -1,0 +1,162 @@
+---
+title: "KNN TOTALES SEMANAL"
+author: "Miguel Angel Villegas"
+date: "2025-03-10"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libreria}
+library(readxl)
+library(forecast)
+library(TSstudio)
+library(tsfknn)
+```
+
+# Introducción
+Se descargan los valores de los productos ,luego se crea la serie temporal con una frecuencia mensual. Puesto que es un método no-parámetrico no existe información de AIC y de los residuales del modelo resultante. Por lo que el críterio a considerar para evaluar el modelo seran las metricas de exactitud, además el mejor modelo se determina en base al número de "k" vecinos en un vector de valores, que dependiendo el número de retrasos se puede maximixar pues el modelo tolera un número máximo de ambos combinados, en caso de sobre pasar el numero máximo de retrasos o vecinos próximos se despliega una advertencia la cual indica la imposibilidad de realizar el cálculo.
+
+Se obtienen los datos
+ 
+```{r ruta}
+ruta_totales <- "/cloud/project/totales_transformados.xlsx"
+excel_sheets(ruta_totales)
+```
+
+
+```{r Datos}
+totales_transformados <- as.data.frame(read_xlsx(path = ruta_totales, col_names = T, 
+                                  sheet = "Sheet 1"))
+head(totales_transformados)
+```
+
+Serie de tiempo
+
+```{r serie}
+serie_KNN_TOT_sem <- ts(data = totales_transformados$Totales, 
+                        start = c(2019,07,03), end = c(2024,08,05),
+                        frequency = 52)
+```
+
+
+Gráficas de serie de tiempo
+
+```{r plot series, echo=FALSE}
+plot(serie_KNN_TOT_sem,type = "l", col = "blue", 
+     main = "Serie semanal de productos totales", ylab = "Valores")
+```
+
+
+Serie de entrenamiento y prueba
+
+```{r division}
+dividida_knn_TOT_sem <- ts_split(serie_KNN_TOT_sem,
+                                 sample.out = round(length(serie_KNN_TOT_sem)*0.2))
+
+train_knn_TOT_sem <- dividida_knn_TOT_sem$train
+
+test_knn_TOT_sem <- dividida_knn_TOT_sem$test
+```
+
+## Modelo KNN con la estrategia de multiples entradas y multiples salidas
+
+```{r modelo}
+pronosticos_knn_TOT_sem <- knn_forecasting(train_knn_TOT_sem, 
+                                           h = length(test_knn_TOT_sem), 
+                                           lags = c(1:52), 
+                                           k = 52, msas = "MIMO")
+```
+
+Gráfica pronóstico
+
+```{r autoplot,echo=FALSE}
+autoplot(pronosticos_knn_TOT_sem)
+```
+
+Intervalo de confianza
+
+```{r IC}
+erro_TOT_knn_sem <- ( test_knn_TOT_sem - pronosticos_knn_TOT_sem$prediction)
+sd_errores_TOT_knn_sem <- sd(erro_TOT_knn_sem, na.rm = T)
+sd_e <- (sd_errores_TOT_knn_sem)
+margen_error_TOT_knn_sem <- sd_e * 1.959964 # qnorm(0.975)
+
+# Limites
+pronosticos_knn_TOT_sem$inferior <- pronosticos_knn_TOT_sem$prediction - margen_error_TOT_knn_sem
+pronosticos_knn_TOT_sem$superior <- pronosticos_knn_TOT_sem$prediction + margen_error_TOT_knn_sem
+```
+
+Gráfica con los valores de prueba y pronóstico.
+
+```{r graficas pronos, echo=FALSE}
+plot(test_knn_TOT_sem[1:10], type = "l", col = "blue",
+     main = "Serie Prueba - Pronostico KKN semanal total", ylab = "Valores", lwd = 2, 
+     ylim = c(-5,5), xlab ="Semanas")
+lines(pronosticos_knn_TOT_sem$prediction[1:10],type = "l", col = "red",lty = 2, 
+      lwd = 2)
+lines(pronosticos_knn_TOT_sem$inferior[1:10], col = "steelblue", lty = 2)
+lines(pronosticos_knn_TOT_sem$superior[1:10], col = "steelblue", lty = 2)
+legend("bottomleft",legend = c("Actual","Prediccion", "IC"), 
+       col = c("blue", "red", "steelblue"), lty = c(1,2, 2), cex = 0.4)
+```
+
+Medidas de exactitud
+
+```{r metricas1}
+accuracy(pronosticos_knn_TOT_sem$prediction,x = test_knn_TOT_sem)
+#                    ME     RMSE      MAE      MPE     MAPE       ACF1 Theil's U
+# Test set -0.001072913 2.034083 1.644042 90.72219 96.59325 -0.4201553 0.8671777
+```
+
+```{r metricas2}
+accuracy(pronosticos_knn_TOT_sem$prediction[1:10],x = test_knn_TOT_sem[1:10])
+#                  ME     RMSE      MAE      MPE     MAPE
+# Test set -0.2631414 1.810008 1.273122 60.92667 91.45617
+```
+
+
+Se realiza el método rolling del paquete "tsfknn" que evalua la presicion de origen rotativo de la predicción de un modelo
+
+```{r rolling}
+prono_knn_TOT_roll_sem <- knn_forecasting(serie_KNN_TOT_sem, 
+                                          h = length(test_knn_TOT_sem), 
+                                          lags = c(1:52), 
+                                          k = c(2:52), msas = "MIMO")
+roll_TOT_sem <- rolling_origin(knnf = prono_knn_TOT_roll_sem,
+                               h = length(test_knn_TOT_sem), rolling = T)
+```
+
+Evitando el cero absoluto
+
+```{r ceros}
+prueba_numeric_sem <-  as.numeric(test_knn_TOT_sem)
+prueba_numeric_sem[prueba_numeric_sem == 0] <- 1e-6
+```
+
+
+Metricas con una previsión de 10 semanas
+```{r metricas}
+accuracy(prono_knn_TOT_roll_sem$prediction[1:10],x = prueba_numeric_sem[1:10])
+#                   ME     RMSE      MAE       MPE     MAPE
+#     Test set -0.2286346 1.84927 1.335632 121.722 123.2564
+```
+
+
+```{r graficas pron rolling, echo=FALSE}
+plot(prono_knn_TOT_roll_sem$prediction[1:6], col = "red", ylab = "Valores",
+     main = "Serie de pronósticos semanales de productos", type = "l", ylim = c(-6,6))
+lines(prueba_numeric_sem[1:10],type = "l", col = "blue")
+legend("bottomleft", legend = c("pronostico", "actuales"),
+       fill = c("red", "blue"), cex = 0.6, 
+       lty = c(1,1))
+```
+
+
+## Conclusiones
+El modelo resultante por el método  si el rolling ofrece un mejor resultado  en las medidas de exactitud.
+

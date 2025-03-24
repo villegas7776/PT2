@@ -1,0 +1,321 @@
+---
+title: "REGRESION LINEAL MULTIPLE TOTALES MENSUALES"
+author: "Miguel Angel Villegas"
+date: "2025-03-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Libreria, echo=FALSE, message=FALSE}
+library(tsDyn)
+library(tidyverse)
+library(dplyr)
+library(xts)
+library(forecast)
+library(TSstudio)
+library(kableExtra)
+library(readxl)
+library(EnvStats)
+library(corrplot)
+library(caTools)
+library(GGally)
+library(forecast)
+```
+
+*library(tsDyn)
+
+*library(tidyverse)
+
+*library(dplyr)
+
+*library(readxl)
+
+*library(EnvStats)
+
+*library(corrplot)
+
+*library(caTools)
+
+library(GGally)
+
+*library(forecast)
+
+# Introducción
+Este modelo abarca todos las ventas de los productos, se utilizan las variables:
+Valor Unitario y Cantidad. Se realizan las correlaciones entre las tres variables
+y se determina el modelo lineal múltiple.  El conjunto de entrenamiento y prueba
+esta dividido en una proporción de 80/20, sin embargo, la división es aleatoria,lo 
+hace que el resultado sea mas confiable. Se siembra una semilla para permitir 
+que los valores de la muestra sean los mismos.
+
+
+```{r Datos}
+
+ruta <- "/cloud/project/Ventas_Suministros_Totales.xlsx"
+excel_sheets(ruta)
+# "Ventas Totales Original"    "Servicios Totales Original"
+```
+
+
+```{r data}
+Productos_Totales <- as.data.frame(read_xlsx(ruta, 
+                                             sheet = "Ventas Totales Original"))
+Productos_Totales$Semana <- format(Productos_Totales$Fecha, format = "%Y-%U")
+Productos_Totales$mes <- format(Productos_Totales$Fecha, format = "%Y-%m")
+
+Servicios_Totales <- as.data.frame(read_xlsx(ruta, 
+                                             sheet = "Servicios Totales Original"))
+Servicios_Totales$Semana <- format(Servicios_Totales$Fecha, format = "%Y-%U")
+Servicios_Totales$mes <- format(Servicios_Totales$Fecha, format = "%Y-%m")
+
+datatotal <- merge(x = Productos_Totales, y = Servicios_Totales, all = T)
+colnames(datatotal) <- c("Indice", "Fecha", "RFC", "Empresa", "Cantidad",
+                         "Pieza", "Descripcion", "ValorUnitario", "Total", 
+                         "Semana", "Mes" )
+
+
+```
+
+Se calcula el valor del parámetro lambda para la transformación Boxcox.
+
+```{r}
+RLM_dftotal_mes <- datatotal %>%
+  group_by(mes = as.character(Mes)) %>%
+  summarize(Ventas_Totales = sum(Total), 
+            Ventas_Unitario = sum(ValorUnitario), 
+            Ventas_Cantidad = sum(Cantidad), 
+            .groups = "keep")
+head(RLM_dftotal_mes)
+nrow(RLM_dftotal_mes)
+RLM_dftotal_mes <- as.data.frame(RLM_dftotal_mes)
+head(RLM_dftotal_mes)# Colocar fechas a las semana en Excel
+inicio_mes <- as.Date("2019-07-01")
+fin_mes <- as.Date("2024-08-05")
+
+fechas <- seq(inicio_mes, fin_mes, by = "month")
+Fechas_mes <- data.frame(Fechas_mes = fechas)
+head(Fechas_mes)
+nrow(Fechas_mes)
+
+# Se eleiminan los dos meses que faltan en los datos, noviembre y diciembre del
+# 2022, las filas 41 y 42
+Fechas_mes <- Fechas_mes[-c(41, 42), ]
+
+Fechas_mes <- as.data.frame(Fechas_mes)
+
+# Agredar las fechas mensuales a "RLM_dftotal_mes"
+
+RLM_dftotal_mes <- cbind(RLM_dftotal_mes, Fechas_mes)
+head(RLM_dftotal_mes)
+nrow(RLM_dftotal_mes)
+```
+
+
+
+```{r lambdas}
+VT_lambda_mes <- boxcox(RLM_dftotal_mes$Ventas_Totales, 
+                        objective.name = "Log-Likelihood", optimize = T)# 0.1039999
+VU_lambda_mes <- boxcox(RLM_dftotal_mes$Ventas_Unitario, 
+                        objective.name = "Log-Likelihood", optimize = T)#-0.09042444
+VC_lambda_mes <- boxcox(RLM_dftotal_mes$Ventas_Cantidad, 
+                        objective.name = "Log-Likelihood", optimize = T)#-0.06795844
+```
+ 
+Se obtiene la transformación boxcox para las ventas totales, valor unitario de los productos y cantidad de venta de los productos, por mes.
+
+```{r data regresion}
+RLM_dftotal_mes <- RLM_dftotal_mes %>%
+  mutate(
+    Ventas_Totales = boxcoxTransform(Ventas_Totales, lambda = 0.1039999),
+    Ventas_Unitario = boxcoxTransform(Ventas_Unitario, lambda = -0.09042444),
+    Ventas_Cantidad = boxcoxTransform(Ventas_Cantidad, lambda = --0.06795844)
+  )
+head(RLM_dftotal_mes)
+```
+
+Se seleccionan las columnas que son de interés.
+
+```{r seleccion, echo=FALSE}
+RLM_dftotal_mes <- RLM_dftotal_mes %>% 
+  select(Ventas_Totales, Ventas_Unitario, Ventas_Cantidad)
+```
+
+Se crea una matriz para el cálculo y visualización de las correlaciones, además
+se siembra la semilla para garantizar que los valores sean los mismos.
+
+```{r matriz}
+set.seed(101) # matriz
+RLM_dftotal_mes_mtx <- cbind(RLM_dftotal_mes$Ventas_Totales,
+                             RLM_dftotal_mes$Ventas_Unitario,
+                             RLM_dftotal_mes$Ventas_Cantidad)
+colnames(RLM_dftotal_mes_mtx) <- c("Ventas_Totales", "Ventas_Unitario", "Ventas_Cantidad")
+head(RLM_dftotal_mes_mtx)
+```
+
+## Gráficas de correlación
+
+```{r correlacion, echo=FALSE}
+
+corr_mes <- cor(RLM_dftotal_mes_mtx, method = "spearman")
+corrplot(corr_mes, method = "pie", col = "darkorange", addCoef.col = T,  
+         title = "Correlograma regresion productos mensuales", 
+         tl.col = "darkblue",  
+         tl.srt = 45) 
+```
+
+
+
+```{r densidad correlacion}
+RLM_dftotal_mes <- as.data.frame(RLM_dftotal_mes_mtx)
+
+RLM_dftotal_mes %>% GGally::ggpairs(cardinality_threshold = 10)
+```
+
+Se hace la división del conjunto de datos en una proporción de 80-20.
+
+```{r Modelo y division}
+mod_lm_tot_mes <- sample.split(RLM_dftotal_mes$Ventas_Totales, SplitRatio = 0.80)
+train_lm_tot_mes <- subset(RLM_dftotal_mes, mod_lm_tot_mes == T)
+test_lm_tot_mes <- subset(RLM_dftotal_mes, mod_lm_tot_mes == F)
+```
+
+## Modelo
+Se determina el modelo lineal.
+
+```{r Modelo}
+Mod_lm_TOTAL_mes <- lm(Ventas_Totales ~ ., data = train_lm_tot_mes)
+```
+
+
+Resumen del modelo obtenido.
+
+```{r resumen modelo}
+print(summary(Mod_lm_TOTAL_mes))
+# Multiple R-squared:  0.7828,	Adjusted R-squared:  0.7732 
+```
+
+## Pronostico
+
+```{r pronostico}
+pronostico_lm_TOTAL_mes <- predict(Mod_lm_TOTAL_mes, test_lm_tot_mes)
+```
+
+Se crea una data frame con los resultados y los valores actuales
+
+```{r resultados}
+resp_tot_mes <- cbind(pronostico_lm_TOTAL_mes, test_lm_tot_mes$Ventas_Totales)
+resp_tot_mes <- as.data.frame(resp_tot_mes)
+colnames(resp_tot_mes) <- c("prediccion", "actual")
+head(resp_tot_mes)
+```
+
+Si es hay valores menores que cero se substituyen por cero.
+
+```{r ceros}
+any(resp_tot_mes < 0)
+```
+
+Función
+
+```{r funcion, echo=FALSE}
+zero <- function(x){
+  if (x<0){
+    return(0)
+  }else {
+    return(x)
+  }
+}
+
+resp_tot_mes$prediccion <- sapply(resp_tot_mes$prediccion, zero)
+```
+
+Exactitud del modelo
+
+```{r }
+summary(Mod_lm_TOTAL_mes)$r.squared
+# [1] 0.7828177
+```
+
+Inspección de los residuales. 
+
+```{r grafica residuales, echo=FALSE}
+residuos_lm_tot_mes <- Mod_lm_TOTAL_mes$residuals
+
+ggplot(data = data.frame(residuos = residuos_lm_tot_mes), 
+       aes(x = residuos)) + geom_histogram(bins = 30, fill = "darkred", 
+                                           alpha = 0.95)
+```
+
+Residuales
+
+```{r verificando residuales}
+checkresiduals(Mod_lm_TOTAL_mes, col = "red") # p-value = 0.214
+```
+
+Inspeccionando si existe normalidad en los residuales.
+
+```{r normalidad, echo=FALSE}
+qqnorm(Mod_lm_TOTAL_mes$residuals)
+qqline(Mod_lm_TOTAL_mes$residuals, col = "red")
+```
+
+Se grafican los pronósticos.
+
+```{r grafica pronostico, echo=FALSE}
+pronostico_lm_TOTAL_mes <- predict(Mod_lm_TOTAL_mes, test_lm_tot_mes)
+
+plot(pronostico_lm_TOTAL_mes, type = "lines", col = "darkred")
+
+```
+
+Gráfica de los pronósticos junto con los valores reales.
+
+```{r ploteando resultados, echo=FALSE}
+plot(resp_tot_mes$prediccion, type = "l", lty = 2, lwd = 2, col = "red", 
+     xlab = "Número de Pronósticos mensuales", 
+     ylab = "Valor", main = "Predicción vs Actual por Regresión Multi-Lineal",
+     ylim = c(10,40))
+lines(resp_tot_mes$actual, type = "l",  lty = 1, lwd = 2, col = "blue")
+lines(Mod_lm_TOTAL_mes$fitted.values, type = "l", lty = 1, lwd = 1, col = "orange")
+legend("bottom", legend = c("Predicción", "Actual", "ajustados"),
+       col = c("red", "blue", "orange"), lty = c(2,1,1) , lwd = c(2,2,1), 
+       cex = 0.8, box.lty = 0)
+```
+
+
+
+```{r ploteando pronosticos, echo=FALSE}
+plot(resp_tot_mes$prediccion[1:6], type = "l", lty = 2, lwd = 2, col = "red", 
+     xlab = "Número de Pronósticos mensuales", 
+     ylab = "Valor", main = "Predicción vs Actual por Regresión Multi-Lineal",
+     ylim = c(10,40))
+lines(resp_tot_mes$actual[1:6], type = "l",  lty = 1, lwd = 2, col = "blue")
+lines(Mod_lm_TOTAL_mes$fitted.values[1:6], type = "l", lty = 1, lwd = 1, col = "orange")
+legend("bottom", legend = c("Predicción", "Actual", "ajustados"),
+       col = c("red", "blue", "orange"), lty = c(2,1,1) , lwd = c(2,2,1), 
+       cex = 0.8, box.lty = 0)
+```
+
+
+Se determina la exactitud del modelo.
+
+```{r exactitud}
+accuracy(resp_tot_mes$prediccion, test_lm_tot_mes$Ventas_Totales)
+#                  ME      RMSE       MAE        MPE     MAPE
+# Test set -0.1900724 0.9079058 0.7849562 -0.8872305 3.025572
+```
+
+
+```{r exactitud2}
+accuracy(resp_tot_mes$prediccion[1:6], test_lm_tot_mes$Ventas_Totales[1:6])
+#                  ME      RMSE       MAE       MPE     MAPE
+# Test set -0.1348306 0.9400555 0.8230585 -0.5563705 3.138618
+```
+
+# Conclusiones
+El modelo captura 78.28% la dinámica de la serie, los residuales están muy por encima del valor ideal de  p > 0.05, lo que indica que no existe una correlación entre los residuos. Esto significa que el modelo captura la dinámica de la serie temporal.

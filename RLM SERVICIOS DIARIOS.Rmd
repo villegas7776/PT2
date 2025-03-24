@@ -1,0 +1,262 @@
+---
+title: "RLM SERVICIOS DIARIOS"
+author: "Miguel Angel Villegas"
+date: "2025-03-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Libreria, echo=FALSE, message=FALSE, warning=FALSE}
+library(tsDyn)
+library(tidyverse)
+library(dplyr)
+library(xts)
+library(forecast)
+library(TSstudio)
+library(kableExtra)
+library(readxl)
+library(EnvStats)
+library(corrplot)
+library(caTools)
+library(GGally)
+library(forecast)
+```
+library(tsDyn), library(tidyverse),library(dplyr), library(readxl), library(EnvStats),
+library(corrplot), library(caTools), library(GGally), library(forecast)
+
+# Introducción
+Este modelo abarca todos las ventas de los servicios, se utilizan las variables:
+Valor Unitario y Cantidad. Se realizan las correlaciones entre las tres variables
+y se determina el modelo lineal múltiple.  El conjunto de entrenamiento y prueba
+esta dividido en una proporción de 80/20, sin embargo, la división es aleatoria,lo 
+hace que el resultado sea mas confiable. Se siembra una semilla para permitir 
+que los valores de la muestra sean los mismos.
+
+
+```{r Datos}
+ruta <- "/cloud/project/Ventas_Suministros_Totales.xlsx"
+excel_sheets(ruta)
+# "Ventas Totales Original"    "Servicios Totales Original"
+```
+
+
+```{r data}
+Servicios_Totales <- as.data.frame(read_xlsx(ruta, 
+                                             sheet = "Servicios Totales Original"))
+Servicios_Totales$Semana <- format(Servicios_Totales$Fecha, format = "%Y-%U")
+Servicios_Totales$mes <- format(Servicios_Totales$Fecha, format = "%Y-%m")
+```
+
+
+```{r suma por dia}
+Servicios_Totales <- Servicios_Totales %>%
+  group_by(Fecha = as.Date(Fecha)) %>%
+  summarize(Ventas_Totales = sum(Total), 
+            Ventas_Unitario = sum(ValorUnitario), 
+            Ventas_Cantidad = sum(Cantidad), 
+            .groups = "keep")
+head(Servicios_Totales)
+```
+
+Seleccionando.
+
+```{r}
+Servicios_Totales <- data.frame(Ventas_Totales = Servicios_Totales$Ventas_Totales, Ventas_Unitario = Servicios_Totales$Ventas_Unitario, Ventas_Cantidad = Servicios_Totales$Ventas_Cantidad)
+head(Servicios_Totales)
+```
+
+Se calcula el valor del parámetro lambda para la transformación Boxcox.
+
+```{r lambdas}
+VS_lambda_dia <- boxcox(Servicios_Totales$Ventas_Totales, 
+                        objective.name = "Log-Likelihood", optimize = T)
+# 0.05740459
+VUs_lambda_dia <- boxcox(Servicios_Totales$Ventas_Unitario, 
+                        objective.name = "Log-Likelihood", optimize = T)
+# 0.08905469
+VCs_lambda_dia <- boxcox(Servicios_Totales$Ventas_Cantidad, 
+                        objective.name = "Log-Likelihood", optimize = T)
+# -0.7605906
+```
+ 
+Se obtiene la transformación boxcox para los servicios, valor unitario de los servicios y cantidad de venta de los servicios, todos por dia.
+
+
+```{r data regresion}
+RLM_serv_dia <- Servicios_Totales %>%
+  mutate(
+    Ventas_Totales = boxcoxTransform(Servicios_Totales$Ventas_Totales, lambda = 0.05740459),
+    Ventas_Unitario = boxcoxTransform(Servicios_Totales$Ventas_Unitario, lambda = 0.08905469),
+    Ventas_Cantidad = boxcoxTransform(Servicios_Totales$Ventas_Cantidad, lambda = -0.7605906)
+  )
+head(RLM_serv_dia)
+```
+
+Se crea una matriz para el cálculo y visualización de las correlaciones, además
+se siembra la semilla para garantizar que los valores sean los mismos.
+
+```{r matriz}
+set.seed(123)
+RLM_serv_dia_mtx <- cbind(RLM_serv_dia$Ventas_Totales,
+                             RLM_serv_dia$Ventas_Unitario,
+                             RLM_serv_dia$Ventas_Cantidad)
+colnames(RLM_serv_dia_mtx) <- c("Ventas_Totales", "Ventas_Unitario", "Ventas_Cantidad")
+head(RLM_serv_dia_mtx)
+```
+
+## Gráficas de correlación
+
+```{r correlacion, echo=FALSE}
+corr_serv_dia <- cor(RLM_serv_dia_mtx, method = "spearman")
+corrplot(corr_serv_dia, method = "pie", col = "blue", addCoef.col = T,  
+         title = "Correlograma", 
+         tl.col = "blue",  
+         tl.srt = 45) 
+```
+
+
+
+```{r densidad correlacion}
+RLM_serv_dia <- as.data.frame(RLM_serv_dia_mtx)
+RLM_serv_dia %>% GGally::ggpairs(cardinality_threshold = 10)
+```
+
+Se hace la división del conjunto de datos en una proporción de 80-20.
+
+```{r Modelo y division}
+ms_lm <- sample.split(RLM_serv_dia$Ventas_Totales, SplitRatio = 0.80)
+es_lm <- subset(RLM_serv_dia, ms_lm == T)
+ps_lm <- subset(RLM_serv_dia, ms_lm == F)
+```
+
+## Modelo
+Se determina el modelo lineal.
+
+```{r Modelo}
+Moslm <- lm(Ventas_Totales ~ ., data = es_lm)
+```
+
+
+Resumen del modelo obtenido.
+
+```{r resumen modelo}
+print(summary(Moslm))
+# Multiple R-squared:  0.8565,	Adjusted R-squared:  0.8545 
+```
+
+## Pronostico
+
+```{r pronostico}
+pronostico_lms <- predict(Moslm, ps_lm)
+```
+
+Se crea una data frame con los resultados y los valores actuales.
+
+```{r resultados}
+resultados_s <- cbind(pronostico_lms, ps_lm$Ventas_Totales)
+resultados_s <- as.data.frame(resultados_s)
+colnames(resultados_s) <- c("prediccion", "actual")
+head(resultados_s)
+```
+
+Si es hay valores menores que cero se subtituyen por cero.
+
+```{r ceros}
+any(resultados_s < 0)
+```
+
+Función.
+
+```{r funcion, echo=FALSE}
+zero <- function(x){
+  if (x<0){
+    return(0)
+  }else {
+    return(x)
+  }
+}
+
+resultados_s$prediccion <- sapply(resultados_s$prediccion, zero)
+```
+
+Exactitud del modelo.
+
+```{r }
+summary(Moslm)$r.squared
+# [1] 0.8565253
+```
+
+Inspección de los residuales.
+
+```{r grafica residuales, echo=FALSE}
+residuos_serv_lm <- Moslm$residuals
+
+ggplot(data = data.frame(residuos = residuos_serv_lm), 
+       aes(x = residuos)) + geom_histogram(bins = 30, fill = "darkred", 
+                                           alpha = 0.95)
+```
+
+Residuales
+
+```{r verificando residuales}
+checkresiduals(Moslm, col = "red")
+# p-value = 0.712
+```
+
+Inspeccionando si existe normalidad en los residuales
+
+```{r normalidad, echo=FALSE}
+qqnorm(Moslm$residuals)
+qqline(Moslm$residuals, col = "red")
+```
+
+Se grafican los pronósticos.
+
+```{r grafica pronostico, message=FALSE}
+pronostico_serv_lm <- predict(Moslm, ps_lm)
+
+plot(pronostico_serv_lm, type = "lines", col = "darkred", ylab = "Valores")
+
+```
+
+Gráfica de los pronósticos junto con los valores reales.
+
+```{r ploteando resultados, echo=FALSE}
+plot(resultados_s$prediccion, type = "l", lty = 1, lwd = 2, col = "red", 
+     xlab = "Número de Pronósticos", 
+     ylab = "Valores", main = "Predicción vs Actual por Regresión Multi-Lineal",
+     ylim = c(5,20))
+lines(resultados_s$actual, type = "l",  lty = 1, lwd = 1, col = "blue")
+lines(Moslm$fitted.values, type = "l", lty = 1, lwd = 1, col = "orange")
+legend("bottom", legend = c("Predicción", "Actual", "ajustados"),
+       col = c("red", "blue", "orange"), lty = c(1,1,1) , lwd = c(2,2,1), 
+       cex = 0.8, box.lty = 0)
+```
+
+```{r ploteando pronosticos, echo=FALSE}
+plot(resultados_s$prediccion[1:37], type = "l", lty = 2, lwd = 2, col = "red", 
+     xlab = "Número de Pronósticos", 
+     ylab = "Valores", main = "Predicción vs Actual por Regresión Multi-Lineal",
+     ylim = c(5,20), xlim = c(0,37))
+lines(resultados_s$actual[1:37], type = "l",  lty = 1, lwd = 1, col = "blue")
+legend("bottom", legend = c("Predicción", "Actual"),
+       col = c("red", "blue"), lty = c(2,1) , lwd = c(2,1), 
+       cex = 0.8, box.lty = 0)
+```
+
+
+Se determina la exactitud del modelo.
+
+```{r exactitud}
+accuracy(resultados_s$prediccion[1:37], ps_lm$Ventas_Totales[1:37])
+#                  ME     RMSE      MAE        MPE     MAPE
+# Test set 0.0223222 1.269369 0.8632803 -0.7184874 6.515798
+```
+
+## Conclusiones
+El modelo captura 86.97% la dinámica de la serie, los residuales están muy por encima del valor ideal de  p > 0.05, lo que indica que  no existe una correlación entre los residuos.
